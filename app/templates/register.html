@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Регистрация</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='auth.css') }}">
+</head>
+<body>
+    <main class="auth-shell">
+        <section class="auth-panel" aria-labelledby="register-title">
+            <div class="auth-header">
+                <p class="eyebrow">Messenger</p>
+                <h1 id="register-title">Создать аккаунт</h1>
+            </div>
+
+            <form id="register-form" class="auth-form">
+                <label>
+                    Username
+                    <input name="username" type="text" autocomplete="username" minlength="3" maxlength="50" required>
+                </label>
+
+                <label>
+                    Email
+                    <input name="email" type="email" autocomplete="email" required>
+                </label>
+
+                <label>
+                    Password
+                    <input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required>
+                </label>
+
+                <button type="submit">Зарегистрироваться</button>
+            </form>
+
+            <p id="message" class="message" role="status" aria-live="polite"></p>
+
+            <p class="auth-link">
+                Уже есть аккаунт? <a href="/login">Войти</a>
+            </p>
+        </section>
+    </main>
+
+    <script>
+        const form = document.querySelector("#register-form");
+        const message = document.querySelector("#message");
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            message.textContent = "";
+            message.className = "message";
+
+            const formData = new FormData(form);
+            const payload = {
+                username: formData.get("username"),
+                email: formData.get("email"),
+                password: formData.get("password"),
+            };
+
+            const response = await fetch("/users/", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(payload),
+            });
+
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                message.textContent = error.detail || "Не удалось зарегистрироваться";
+                message.classList.add("error");
+                return;
+            }
+
+            message.textContent = "Аккаунт создан. Сейчас можно войти.";
+            message.classList.add("success");
+            form.reset();
+        });
+    </script>
+</body>
+</html>

@@ -41,18 +41,15 @@ async def create_user(user: UserCreate, db: AsyncSession = Depends(get_async_db)
 
 
 
-@router.post("/token")                                                                # New
+@router.post("/token")
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_async_db)):
-    """
-    Аутентифицирует пользователя и возвращает access_token и refresh_token.
-    """
     result = await db.scalars(
         select(UserModel).where(UserModel.username == form_data.username))
     user = result.first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
+            detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     access_token = create_access_token(data={"sub": user.email, "id": user.id})
