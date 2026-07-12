@@ -24,9 +24,34 @@ class ChatUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=100)
 
 
+class PrivateChatCreate(BaseModel):
+    recipient_username: str = Field(min_length=3, max_length=50)
+    first_message: str = Field(min_length=1)
+
+
+class GroupChatCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+    member_usernames: list[str] = Field(default_factory=list)
+    first_message: str = Field(min_length=1)
+
+
 class ChatRead(ChatBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    created_by_id: int | None
+    created_at: datetime
+
+
+class ChatListItem(BaseModel):
+    id: int
+    title: str
+    chat_type: ChatType
+    is_admin: bool
+    last_message_text: str | None = None
+    last_message_at: datetime | None = None
+
+
+class ChatDetail(ChatListItem):
     created_by_id: int | None
     created_at: datetime

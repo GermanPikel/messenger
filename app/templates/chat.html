@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Чат</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='messenger.css') }}">
+</head>
+<body>
+    <main class="page-shell">
+        <header class="topbar">
+            <div>
+                <a class="back-link" href="/messenger/chats">← Все чаты</a>
+                <h1 id="chat-title">Чат</h1>
+            </div>
+            <span id="connection-status" class="status-pill">Подключение</span>
+        </header>
+
+        <section class="chat-layout">
+            <section class="messages-panel">
+                <div class="messages-toolbar">
+                    <button id="load-more-button" type="button" class="secondary-button">Загрузить раньше</button>
+                    <form id="search-form" class="search-form">
+                        <input name="query" type="search" placeholder="Поиск по сообщениям" required>
+                        <button type="submit">Найти</button>
+                    </form>
+                </div>
+
+                <div id="search-results" class="search-results" hidden></div>
+                <div id="messages" class="messages"></div>
+
+                <form id="message-form" class="composer">
+                    <textarea name="text" rows="2" placeholder="Введите сообщение" required></textarea>
+                    <button type="submit">Отправить</button>
+                </form>
+                <p id="message" class="message" role="status" aria-live="polite"></p>
+            </section>
+
+            <aside id="members-panel" class="members-panel" hidden>
+                <div class="section-title">
+                    <h2>Участники</h2>
+                </div>
+                <div id="members-list" class="members-list"></div>
+                <form id="invite-form" class="stack-form">
+                    <label>
+                        Пригласить пользователя
+                        <input name="username" type="text" required>
+                    </label>
+                    <button type="submit">Пригласить</button>
+                </form>
+            </aside>
+        </section>
+    </main>
+
+    <script>
+        const chatId = {{ chat_id }};
+        const accessToken = localStorage.getItem("access_token");
+        const messagesEl = document.querySelector("#messages");
+        const chatTitle = document.querySelector("#chat-title");
+        const statusPill = document.querySelector("#connection-status");
+        const messageForm = document.querySelector("#message-form");
+        const messageBox = document.querySelector("#message");
+        const loadMoreButton = document.querySelector("#load-more-button");
+        const searchForm = document.querySelector("#search-form");
+        const searchResults = document.querySelector("#search-results");
+        const membersPanel = document.querySelector("#members-panel");
+        const membersList = document.querySelector("#members-list");
+        const inviteForm = document.querySelector("#invite-form");
+        let oldestMessageId = null;
+        let currentChat = null;
+        let socket = null;
+
+        if (!accessToken) {
+            window.location.href = "/login";
+        }
+
+        function getCurrentUserId() {
+            try {
+                const payload = JSON.parse(atob(accessToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+                return Number(payload.id);
+            } catch {
+                return null;
+            }
+        }
+
+        const currentUserId = getCurrentUserId();
+
+        async function apiFetch(url, options = {}) {
+            const headers = {
+                "Authorization": `Bearer ${accessToken}`,
+                ...(options.headers || {}),
+            };
+            return fetch(url, {...options, headers});
+        }
+
+        function showMessage(text, type = "") {
+            messageBox.textContent = text;
+            messageBox.className = `message ${type}`;
+        }
+
+        function renderMessage(message, prepend = false) {
+            const item = document.createElement("article");
+            item.className = "message-item";
+            if (message.sender_id === currentUserId) {
+                item.classList.add("own");
+            }
+            item.dataset.messageId = message.id;
+            item.innerHTML = `
+                <div class="message-meta">
+                    <strong>${message.sender_username || "user"}</strong>
+                    <time>${new Date(message.created_at).toLocaleString()}</time>
+                </div>
+                <p>${message.text}</p>
+            `;
+
+            if (prepend) {
+                messagesEl.prepend(item);
+            } else {
+                messagesEl.append(item);
+                item.scrollIntoView({block: "end"});
+            }
+        }
+
+        async function loadChat() {
+            const response = await apiFetch(`/chats/${chatId}`);
+            if (!response.ok) {
+                window.location.href = "/messenger/chats";
+                return;
+            }
+
+            currentChat = await response.json();
+            chatTitle.textContent = currentChat.title;
+
+            if (currentChat.chat_type === "group" && currentChat.is_admin) {
+                membersPanel.hidden = false;
+                await loadMembers();
+            }
+        }
+
+        async function loadMessages(beforeId = null) {
+            const url = beforeId
+                ? `/chats/${chatId}/messages?limit=15&before_id=${beforeId}`
+                : `/chats/${chatId}/messages?limit=15`;
+            const response = await apiFetch(url);
+            if (!response.ok) {
+                showMessage("Не удалось загрузить сообщения", "error");
+                return;
+            }
+
+            const messages = await response.json();
+            if (!beforeId) {
+                messagesEl.replaceChildren();
+            }
+
+            messages.forEach((message) => renderMessage(message, Boolean(beforeId)));
+            if (messages.length > 0) {
+                oldestMessageId = messages[0].id;
+            }
+            loadMoreButton.disabled = messages.length === 0;
+        }
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+            socket = new WebSocket(`${protocol}://${window.location.host}/ws/chats/${chatId}?token=${encodeURIComponent(accessToken)}`);
+
+            socket.addEventListener("open", () => {
+                statusPill.textContent = "Online";
+                statusPill.classList.add("online");
+            });
+
+            socket.addEventListener("close", () => {
+                statusPill.textContent = "Отключено";
+                statusPill.classList.remove("online");
+            });
+
+            socket.addEventListener("message", (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === "message") {
+                    renderMessage(data);
+                }
+                if (data.type === "error") {
+                    showMessage(data.detail, "error");
+                }
+            });
+        }
+
+        messageForm.addEventListener("submit", (event) => {
+            event.preventDefault();
+            const formData = new FormData(messageForm);
+            const text = String(formData.get("text") || "").trim();
+            if (!text || !socket || socket.readyState !== WebSocket.OPEN) {
+                showMessage("WebSocket не подключён", "error");
+                return;
+            }
+
+            socket.send(JSON.stringify({text}));
+            messageForm.reset();
+            showMessage("");
+        });
+
+        loadMoreButton.addEventListener("click", () => {
+            if (oldestMessageId) {
+                loadMessages(oldestMessageId);
+            }
+        });
+
+        searchForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const formData = new FormData(searchForm);
+            const query = encodeURIComponent(formData.get("query"));
+            const response = await apiFetch(`/chats/${chatId}/messages/search?query=${query}`);
+            if (!response.ok) {
+                showMessage("Не удалось выполнить поиск", "error");
+                return;
+            }
+
+            const results = await response.json();
+            searchResults.hidden = false;
+            searchResults.replaceChildren(...results.map((result) => {
+                const item = document.createElement("div");
+                item.className = "search-result";
+                item.textContent = `${result.sender_username || "user"}: ${result.text}`;
+                return item;
+            }));
+            if (results.length === 0) {
+                searchResults.textContent = "Ничего не найдено";
+            }
+        });
+
+        async function loadMembers() {
+            const response = await apiFetch(`/chats/${chatId}/members`);
+            if (!response.ok) {
+                return;
+            }
+
+            const members = await response.json();
+            membersList.replaceChildren(...members.map(renderMember));
+        }
+
+        function renderMember(member) {
+            const item = document.createElement("div");
+            item.className = "member-row";
+            item.innerHTML = `
+                <span>${member.username}${member.is_admin ? " · admin" : ""}</span>
+                <div class="member-actions"></div>
+            `;
+
+            const actions = item.querySelector(".member-actions");
+            const promoteButton = document.createElement("button");
+            promoteButton.type = "button";
+            promoteButton.textContent = "Назначить администратора";
+            promoteButton.disabled = member.is_admin;
+            promoteButton.addEventListener("click", () => promoteMember(member.user_id));
+
+            const removeButton = document.createElement("button");
+            removeButton.type = "button";
+            removeButton.textContent = "Удалить";
+            removeButton.addEventListener("click", () => removeMember(member.user_id));
+
+            actions.append(promoteButton, removeButton);
+            return item;
+        }
+
+        async function promoteMember(userId) {
+            const response = await apiFetch(`/chats/${chatId}/members/${userId}/admin`, {method: "PATCH"});
+            if (!response.ok) {
+                showMessage("Не удалось назначить администратора", "error");
+                return;
+            }
+            await loadMembers();
+        }
+
+        async function removeMember(userId) {
+            const response = await apiFetch(`/chats/${chatId}/members/${userId}`, {method: "DELETE"});
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                showMessage(error.detail || "Не удалось удалить участника", "error");
+                return;
+            }
+            await loadMembers();
+        }
+
+        inviteForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const formData = new FormData(inviteForm);
+            const response = await apiFetch(`/chats/${chatId}/members`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({username: formData.get("username")}),
+            });
+
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                showMessage(error.detail || "Не удалось пригласить пользователя", "error");
+                return;
+            }
+
+            inviteForm.reset();
+            await loadMembers();
+        });
+
+        loadChat();
+        loadMessages();
+        connectWebSocket();
+    </script>
+</body>
+</html>

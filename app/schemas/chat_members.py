@@ -8,6 +8,10 @@ class ChatMemberCreate(BaseModel):
     is_admin: bool = False
 
 
+class ChatMemberInvite(BaseModel):
+    username: str
+
+
 class ChatMemberUpdate(BaseModel):
     is_admin: bool
 
@@ -18,6 +22,7 @@ class ChatMemberRead(BaseModel):
     id: int
     chat_id: int
     user_id: int
+    username: str | None = None
     is_admin: bool
     joined_at: datetime
     left_at: datetime | None

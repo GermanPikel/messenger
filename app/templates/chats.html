@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Чаты</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='messenger.css') }}">
+</head>
+<body>
+    <main class="page-shell">
+        <header class="topbar">
+            <div>
+                <p class="eyebrow">Messenger</p>
+                <h1>Чаты</h1>
+            </div>
+            <button id="logout-button" type="button" class="secondary-button">Выйти</button>
+        </header>
+
+        <section class="workspace">
+            <aside class="sidebar">
+                <div class="section-title">
+                    <h2>Мои чаты</h2>
+                    <button id="reload-button" type="button" class="icon-button" title="Обновить">↻</button>
+                </div>
+                <p id="empty-message" class="muted" hidden>У вас нет чатов</p>
+                <div id="chat-list" class="chat-list"></div>
+            </aside>
+
+            <section class="tool-panel">
+                <div class="section-title">
+                    <h2>Создать чат</h2>
+                </div>
+
+                <div class="segmented">
+                    <button id="private-tab" type="button" class="active">Личный чат</button>
+                    <button id="group-tab" type="button">Групповой чат</button>
+                </div>
+
+                <form id="private-form" class="stack-form">
+                    <label>
+                        Username собеседника
+                        <input name="recipient_username" type="text" required>
+                    </label>
+                    <label>
+                        Первое сообщение
+                        <textarea name="first_message" rows="4" required></textarea>
+                    </label>
+                    <button type="submit">Отправить сообщение</button>
+                </form>
+
+                <form id="group-form" class="stack-form" hidden>
+                    <label>
+                        Название чата
+                        <input name="title" type="text" required>
+                    </label>
+                    <label>
+                        Usernames через запятую
+                        <input name="member_usernames" type="text" placeholder="ivan, maria, petr">
+                    </label>
+                    <label>
+                        Первое сообщение
+                        <textarea name="first_message" rows="4" required></textarea>
+                    </label>
+                    <button type="submit">Создать чат</button>
+                </form>
+
+                <p id="message" class="message" role="status" aria-live="polite"></p>
+            </section>
+        </section>
+    </main>
+
+    <script>
+        const accessToken = localStorage.getItem("access_token");
+        const chatList = document.querySelector("#chat-list");
+        const emptyMessage = document.querySelector("#empty-message");
+        const message = document.querySelector("#message");
+        const privateTab = document.querySelector("#private-tab");
+        const groupTab = document.querySelector("#group-tab");
+        const privateForm = document.querySelector("#private-form");
+        const groupForm = document.querySelector("#group-form");
+
+        if (!accessToken) {
+            window.location.href = "/login";
+        }
+
+        function showMessage(text, type = "") {
+            message.textContent = text;
+            message.className = `message ${type}`;
+        }
+
+        async function apiFetch(url, options = {}) {
+            const headers = {
+                "Authorization": `Bearer ${accessToken}`,
+                ...(options.headers || {}),
+            };
+            return fetch(url, {...options, headers});
+        }
+
+        function renderChat(chat) {
+            const link = document.createElement("a");
+            link.className = "chat-row";
+            link.href = `/messenger/chats/${chat.id}`;
+            link.innerHTML = `
+                <strong>${chat.title}</strong>
+                <span>${chat.last_message_text || "Сообщений пока нет"}</span>
+            `;
+            return link;
+        }
+
+        async function loadChats() {
+            const response = await apiFetch("/chats/");
+            if (!response.ok) {
+                localStorage.removeItem("access_token");
+                localStorage.removeItem("refresh_token");
+                window.location.href = "/login";
+                return;
+            }
+
+            const chats = await response.json();
+            chatList.replaceChildren(...chats.map(renderChat));
+            emptyMessage.hidden = chats.length > 0;
+        }
+
+        function activateMode(mode) {
+            const isPrivate = mode === "private";
+            privateForm.hidden = !isPrivate;
+            groupForm.hidden = isPrivate;
+            privateTab.classList.toggle("active", isPrivate);
+            groupTab.classList.toggle("active", !isPrivate);
+            showMessage("");
+        }
+
+        privateTab.addEventListener("click", () => activateMode("private"));
+        groupTab.addEventListener("click", () => activateMode("group"));
+
+        privateForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const formData = new FormData(privateForm);
+            const response = await apiFetch("/chats/private", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    recipient_username: formData.get("recipient_username"),
+                    first_message: formData.get("first_message"),
+                }),
+            });
+
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                showMessage(error.detail || "Не удалось создать чат", "error");
+                return;
+            }
+
+            const chat = await response.json();
+            window.location.href = `/messenger/chats/${chat.id}`;
+        });
+
+        groupForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const formData = new FormData(groupForm);
+            const usernames = String(formData.get("member_usernames") || "")
+                .split(",")
+                .map((username) => username.trim())
+                .filter(Boolean);
+
+            const response = await apiFetch("/chats/group", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    title: formData.get("title"),
+                    member_usernames: usernames,
+                    first_message: formData.get("first_message"),
+                }),
+            });
+
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                showMessage(error.detail || "Не удалось создать групповой чат", "error");
+                return;
+            }
+
+            const chat = await response.json();
+            window.location.href = `/messenger/chats/${chat.id}`;
+        });
+
+        document.querySelector("#reload-button").addEventListener("click", loadChats);
+        document.querySelector("#logout-button").addEventListener("click", () => {
+            localStorage.removeItem("access_token");
+            localStorage.removeItem("refresh_token");
+            window.location.href = "/login";
+        });
+
+        loadChats();
+    </script>
+</body>
+</html>

@@ -17,6 +17,7 @@ class MessageRead(BaseModel):
     id: int
     chat_id: int
     sender_id: int
+    sender_username: str | None = None
     text: str
     created_at: datetime
     updated_at: datetime | None

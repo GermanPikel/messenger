@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from app.routers.users import router as user_router
 from app.routers.pages import router as pages_router
+from app.routers.chats import router as chats_router
+from app.routers.ws import router as ws_router
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -18,3 +20,5 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 app.include_router(pages_router)
 app.include_router(user_router)
+app.include_router(chats_router)
+app.include_router(ws_router)
