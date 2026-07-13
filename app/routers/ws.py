@@ -1,8 +1,10 @@
 import json
+from uuid import UUID
 
 import jwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import ALGORITHM, SECRET_KEY
@@ -69,10 +71,48 @@ async def is_active_chat_member(db: AsyncSession, chat_id: int, user_id: int) ->
     return result.first() is not None
 
 
-def parse_message_text(raw_data: str) -> str | None:
+def serialize_message(message: Message, sender: User) -> dict:
+    return {
+        "id": message.id,
+        "chat_id": message.chat_id,
+        "sender_id": message.sender_id,
+        "client_message_id": message.client_message_id,
+        "sender_username": sender.username,
+        "text": message.text,
+        "created_at": message.created_at.isoformat(),
+    }
+
+
+async def get_message_by_client_id(
+    db: AsyncSession,
+    sender_id: int,
+    client_message_id: str,
+) -> Message | None:
+    result = await db.scalars(
+        select(Message).where(
+            Message.sender_id == sender_id,
+            Message.client_message_id == client_message_id,
+        )
+    )
+    return result.first()
+
+
+def parse_message_payload(raw_data: str) -> tuple[str, str] | None:
     try:
         data = json.loads(raw_data)
     except json.JSONDecodeError:
+        return None
+
+    if data.get("type") != "message.send":
+        return None
+
+    client_message_id = data.get("client_message_id")
+    if not isinstance(client_message_id, str):
+        return None
+
+    try:
+        UUID(client_message_id)
+    except ValueError:
         return None
 
     text = data.get("text")
@@ -80,7 +120,10 @@ def parse_message_text(raw_data: str) -> str | None:
         return None
 
     text = text.strip()
-    return text or None
+    if not text:
+        return None
+
+    return client_message_id, text
 
 
 @router.websocket("/ws/chats/{chat_id}")
@@ -101,33 +144,75 @@ async def chat_websocket(websocket: WebSocket, chat_id: int):
         try:
             while True:
                 raw_data = await websocket.receive_text()
-                text = parse_message_text(raw_data)
-                if text is None:
+                parsed_payload = parse_message_payload(raw_data)
+                if parsed_payload is None:
                     await websocket.send_json({
                         "type": "error",
-                        "detail": "Message payload must be JSON with non-empty text field",
+                        "code": "invalid_payload",
+                        "detail": "Payload must be message.send with client_message_id UUID and non-empty text",
                     })
                     continue
+                client_message_id, text = parsed_payload
 
                 if not await is_active_chat_member(db, chat_id, user.id):
                     await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
                     return
 
-                message = Message(chat_id=chat_id, sender_id=user.id, text=text)
+                existing_message = await get_message_by_client_id(db, user.id, client_message_id)
+                if existing_message is not None:
+                    await websocket.send_json({
+                        "type": "message.ack",
+                        "client_message_id": client_message_id,
+                        "message_id": existing_message.id,
+                        "status": "duplicate",
+                        "message": serialize_message(existing_message, user),
+                    })
+                    continue
+
+                message = Message(
+                    chat_id=chat_id,
+                    sender_id=user.id,
+                    client_message_id=client_message_id,
+                    text=text,
+                )
                 db.add(message)
-                await db.commit()
+                try:
+                    await db.commit()
+                except IntegrityError:
+                    await db.rollback()
+                    existing_message = await get_message_by_client_id(db, user.id, client_message_id)
+                    if existing_message is None:
+                        await websocket.send_json({
+                            "type": "error",
+                            "code": "message_save_failed",
+                            "detail": "Message could not be saved",
+                        })
+                        continue
+                    await websocket.send_json({
+                        "type": "message.ack",
+                        "client_message_id": client_message_id,
+                        "message_id": existing_message.id,
+                        "status": "duplicate",
+                        "message": serialize_message(existing_message, user),
+                    })
+                    continue
+
                 await db.refresh(message)
+                serialized_message = serialize_message(message, user)
+
+                await websocket.send_json({
+                    "type": "message.ack",
+                    "client_message_id": client_message_id,
+                    "message_id": message.id,
+                    "status": "saved",
+                    "message": serialized_message,
+                })
 
                 await manager.broadcast(
                     chat_id,
                     {
                         "type": "message",
-                        "id": message.id,
-                        "chat_id": message.chat_id,
-                        "sender_id": message.sender_id,
-                        "sender_username": user.username,
-                        "text": message.text,
-                        "created_at": message.created_at.isoformat(),
+                        **serialized_message,
                     },
                 )
         except WebSocketDisconnect:

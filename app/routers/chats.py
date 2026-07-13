@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import desc, func, select
+from sqlalchemy import asc, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
@@ -156,6 +157,7 @@ def serialize_message(message: Message, sender_username: str | None = None) -> M
         id=message.id,
         chat_id=message.chat_id,
         sender_id=message.sender_id,
+        client_message_id=message.client_message_id,
         sender_username=sender_username,
         text=message.text,
         created_at=message.created_at,
@@ -214,7 +216,12 @@ async def create_private_chat(
         )
         await db.flush()
 
-    message = Message(chat_id=chat.id, sender_id=current_user.id, text=chat_data.first_message)
+    message = Message(
+        chat_id=chat.id,
+        sender_id=current_user.id,
+        client_message_id=str(uuid4()),
+        text=chat_data.first_message,
+    )
     db.add(message)
     await db.commit()
     await db.refresh(chat)
@@ -260,7 +267,14 @@ async def create_group_chat(
         ChatMember(chat_id=chat.id, user_id=member.id)
         for member in members
     )
-    db.add(Message(chat_id=chat.id, sender_id=current_user.id, text=chat_data.first_message))
+    db.add(
+        Message(
+            chat_id=chat.id,
+            sender_id=current_user.id,
+            client_message_id=str(uuid4()),
+            text=chat_data.first_message,
+        )
+    )
 
     await db.commit()
     await db.refresh(chat)
@@ -295,10 +309,16 @@ async def get_chat_messages(
     chat_id: int,
     limit: int = Query(default=15, ge=1, le=50),
     before_id: int | None = Query(default=None, ge=1),
+    after_id: int | None = Query(default=None, ge=1),
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_user),
 ):
     await require_active_membership(db, chat_id, current_user.id)
+    if before_id is not None and after_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Use either before_id or after_id, not both",
+        )
 
     conditions = [
         Message.chat_id == chat_id,
@@ -306,16 +326,20 @@ async def get_chat_messages(
     ]
     if before_id is not None:
         conditions.append(Message.id < before_id)
+    if after_id is not None:
+        conditions.append(Message.id > after_id)
+
+    order_by = asc(Message.id) if after_id is not None else desc(Message.id)
 
     result = await db.execute(
         select(Message, User.username)
         .join(User, User.id == Message.sender_id)
         .where(*conditions)
-        .order_by(desc(Message.id))
+        .order_by(order_by)
         .limit(limit)
     )
 
-    rows = list(reversed(result.all()))
+    rows = result.all() if after_id is not None else list(reversed(result.all()))
     return [serialize_message(message, username) for message, username in rows]
 
 

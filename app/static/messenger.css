@@ -258,6 +258,14 @@ label {
     border-color: #2b6cb0;
 }
 
+.message-item.pending {
+    opacity: 0.68;
+}
+
+.message-item.pending.acked {
+    opacity: 0.82;
+}
+
 .message-meta {
     display: flex;
     gap: 8px;

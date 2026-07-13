@@ -67,8 +67,11 @@
         const membersList = document.querySelector("#members-list");
         const inviteForm = document.querySelector("#invite-form");
         let oldestMessageId = null;
+        let lastMessageId = null;
         let currentChat = null;
         let socket = null;
+        const pendingMessages = new Map();
+        const renderedMessageIds = new Set();
 
         if (!accessToken) {
             window.location.href = "/login";
@@ -99,12 +102,27 @@
         }
 
         function renderMessage(message, prepend = false) {
+            const existingPending = message.client_message_id
+                ? document.querySelector(`[data-client-message-id="${message.client_message_id}"]`)
+                : null;
+            if (existingPending) {
+                existingPending.remove();
+                pendingMessages.delete(message.client_message_id);
+            }
+
+            if (message.id && renderedMessageIds.has(message.id)) {
+                return;
+            }
+
             const item = document.createElement("article");
             item.className = "message-item";
             if (message.sender_id === currentUserId) {
                 item.classList.add("own");
             }
             item.dataset.messageId = message.id;
+            if (message.client_message_id) {
+                item.dataset.clientMessageId = message.client_message_id;
+            }
             item.innerHTML = `
                 <div class="message-meta">
                     <strong>${message.sender_username || "user"}</strong>
@@ -118,6 +136,40 @@
             } else {
                 messagesEl.append(item);
                 item.scrollIntoView({block: "end"});
+            }
+
+            if (message.id) {
+                renderedMessageIds.add(message.id);
+                lastMessageId = Math.max(lastMessageId || 0, message.id);
+            }
+        }
+
+        function renderPendingMessage(clientMessageId, text) {
+            const item = document.createElement("article");
+            item.className = "message-item own pending";
+            item.dataset.clientMessageId = clientMessageId;
+            item.innerHTML = `
+                <div class="message-meta">
+                    <strong>Вы</strong>
+                    <time>отправляется</time>
+                </div>
+                <p>${text}</p>
+            `;
+            messagesEl.append(item);
+            item.scrollIntoView({block: "end"});
+            pendingMessages.set(clientMessageId, item);
+        }
+
+        function markPendingAsAcked(clientMessageId, messageId) {
+            const item = pendingMessages.get(clientMessageId);
+            if (!item) {
+                return;
+            }
+            item.dataset.messageId = messageId;
+            item.classList.add("acked");
+            const time = item.querySelector("time");
+            if (time) {
+                time.textContent = "сохранено";
             }
         }
 
@@ -159,6 +211,16 @@
             loadMoreButton.disabled = messages.length === 0;
         }
 
+        async function loadMessagesAfter(afterId) {
+            const response = await apiFetch(`/chats/${chatId}/messages?limit=50&after_id=${afterId}`);
+            if (!response.ok) {
+                return;
+            }
+
+            const messages = await response.json();
+            messages.forEach((message) => renderMessage(message));
+        }
+
         function connectWebSocket() {
             const protocol = window.location.protocol === "https:" ? "wss" : "ws";
             socket = new WebSocket(`${protocol}://${window.location.host}/ws/chats/${chatId}?token=${encodeURIComponent(accessToken)}`);
@@ -166,15 +228,25 @@
             socket.addEventListener("open", () => {
                 statusPill.textContent = "Online";
                 statusPill.classList.add("online");
+                if (lastMessageId) {
+                    loadMessagesAfter(lastMessageId);
+                }
             });
 
             socket.addEventListener("close", () => {
                 statusPill.textContent = "Отключено";
                 statusPill.classList.remove("online");
+                setTimeout(connectWebSocket, 1500);
             });
 
             socket.addEventListener("message", (event) => {
                 const data = JSON.parse(event.data);
+                if (data.type === "message.ack") {
+                    markPendingAsAcked(data.client_message_id, data.message_id);
+                    if (data.status === "duplicate" && data.message) {
+                        renderMessage(data.message);
+                    }
+                }
                 if (data.type === "message") {
                     renderMessage(data);
                 }
@@ -193,7 +265,13 @@
                 return;
             }
 
-            socket.send(JSON.stringify({text}));
+            const clientMessageId = crypto.randomUUID();
+            renderPendingMessage(clientMessageId, text);
+            socket.send(JSON.stringify({
+                type: "message.send",
+                client_message_id: clientMessageId,
+                text,
+            }));
             messageForm.reset();
             showMessage("");
         });
