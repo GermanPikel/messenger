@@ -48,9 +48,6 @@ def create_refresh_token(data: dict):
 
 async def get_current_user(token: str = Depends(oauth2_scheme),
                            db: AsyncSession = Depends(get_async_db)):
-    """
-    Проверяет JWT и возвращает пользователя из базы.
-    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
